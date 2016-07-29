@@ -1,14 +1,15 @@
 
 #include <random>
-typedef std::mt19937 generator_type;
 
 #include "Aboria.h"
 using namespace Aboria;
 
 #include <vtkStructuredGrid.h>
 #include <vtkXMLStructuredGridWriter.h>
+#include <vtkDoubleArray.h>
 
 #include "boost/program_options.hpp" 
+#include <boost/math/constants/constants.hpp>
 namespace po = boost::program_options;
 
 #include <math.h>
@@ -18,26 +19,26 @@ namespace po = boost::program_options;
 int main(int argc, char **argv) {
     const double L = 1.0;
 
-    double2 low(0);
-    double2 high(L);
+    double2 low(-L/2);
+    double2 high(L/2);
     const int nx = 101;
     const int nr = 100;
     const int ntheta = 100;
     const double ds = L/nx;
     const double dr = 0.5*L/nr;
+    const double PI = boost::math::constants::pi<double>();
     const double dtheta = 2*PI/ntheta;
     const double D = 1.0;
     double epsilon;
     unsigned int nout;
     const double F0 = 5;
-    const double sigma = 2;
     //const double cutoff = -std::log(1e-7);
     std::string output_name;
 
     unsigned int n = 20;
     unsigned int samples = 1000;
     double cutoff_ratio,timestep_ratio,final_time,sigma;
-    int oned,mode,output_point_positions,walls,init;
+    int oned,mode,output_point_positions,init;
 
     po::options_description desc("Allowed options");
     desc.add_options()
@@ -47,7 +48,7 @@ int main(int argc, char **argv) {
         ("nout", po::value<unsigned int>(&nout)->default_value(10), "number of output points")
         ("cutoff", po::value<double>(&cutoff_ratio)->default_value(5), "cutoff for force calculation divided by epsilon")
         ("epsilon", po::value<double>(&epsilon)->default_value(0.01), "epsilon for force calculation")
-        ("sigma", po::value<double>(&sigma)->default_value(0.01), "width of initial condition")
+        ("sigma", po::value<double>(&sigma)->default_value(0.1), "width of initial condition")
         ("dt", po::value<double>(&timestep_ratio)->default_value(0.33), "average diffusion timstep divided by epsilon")
         ("final-time", po::value<double>(&final_time)->default_value(0.05), "total simulation time")
         ("output-point-positions", po::value<int>(&output_point_positions)->default_value(0), "output point positions")
@@ -93,6 +94,7 @@ int main(int argc, char **argv) {
 
         generator_type generator(sample);
         typedef Particles<std::tuple<force>,2> spheres_type;
+        typedef spheres_type::position position;
         spheres_type spheres(samples + sample*n);
 
         std::vector<unsigned int> output_hist_sample(nx*nx,0);
@@ -101,29 +103,18 @@ int main(int argc, char **argv) {
 
 
         for (int i=0; i<n; ++i) {
-            spheres.push_back(double2(distribution(generator),distribution(generator)));
+            bool not_done = true;
+            double2 p;
+            while (not_done) {
+                p = double2(distribution(generator),distribution(generator));
+                not_done = ((p[0] < low[0]) || (p[0] >= high[0]) || (p[1] < low[1]) || (p[1] >= high[1]));
+            }
+            spheres.push_back(p);
         }
 
-
-        if (walls) {
-            //if (oned) {
-            //    double2 high_oned = double2(high[0]+(high[0]-low[0]),(high[1]-low[1])/2,0);
-            //    double2 low_oned = double2(low[0]-(high[0]-low[0]),(high[1]-low[1])/2,0);
-            //    spheres.init_neighbour_search(low_oned,high_oned,2*cutoff,Vect3b(false,false,false));
-            //} else {
-                double2 high_twod = double2(high[0]+(high[0]-low[0]),high[1]+(high[1]-low[1]),0);
-                double2 low_twod = double2(low[0]-(high[0]-low[0]),low[1]-(high[1]-low[1]),0);
-                spheres.init_neighbour_search(low_twod,high_twod,cutoff,Vect3b(false,false,false));
-            //}
-        } else {
-            //if (oned) {
-            //    double2 high_oned = double2(high[0],(high[1]-low[1])/2,0);
-            //    double2 low_oned = double2(low[0],(high[1]-low[1])/2,0);
-            //    spheres.init_neighbour_search(low_oned,high_oned,2*cutoff,Vect3b(true,false,false));
-            //} else {
-                spheres.init_neighbour_search(low,high,cutoff,Vect3b(true,true,false));
-            //}
-        }
+        double2 high_twod = double2(high[0]+(high[0]-low[0]),high[1]+(high[1]-low[1]));
+        double2 low_twod = double2(low[0]-(high[0]-low[0]),low[1]-(high[1]-low[1]));
+        spheres.init_neighbour_search(low_twod,high_twod,cutoff,bool2(false));
 
         Symbol<position> p;
         Symbol<force> f;
@@ -131,9 +122,9 @@ int main(int argc, char **argv) {
         Symbol<alive> alive_;
         Label<0,spheres_type> a(spheres);
         Label<1,spheres_type> b(spheres);
-        Dx dx;
+        auto dx = create_dx(a,b);
         Normal N;
-        VectorSymbolic<double> vector;
+        VectorSymbolic<double,2> vector;
         Accumulate<std::plus<double2> > sum;
         Accumulate<std::plus<int> > sum_int;
 
@@ -144,21 +135,11 @@ int main(int argc, char **argv) {
         for (int i = 0; i <= nout; i++) {
             
             for (int j = 0; j < timesteps_per_out; ++j) {
-                f[a] = sum(b, norm(dx) < cutoff && id_[a]!=id_[b], if_else(norm(dx)!=0,(1/epsilon)*exp(-norm(dx)/epsilon)*dx/norm(dx),0));
-                p[a] += std::sqrt(2*D*dt)*vector(N,N,0) + dt*f/(1+norm(f)*dt);
-                //    + if_else(p[0]!=L/2,(1/epsilon)*exp(-(L-2*p[0])/epsilon)*double2(-1,0,0),0)
-                //    + if_else(p[0]!=-L/2,(1/epsilon)*exp(-(2*p[0]+L)/epsilon)*double2(1,0,0),0)
-                //    + if_else(p[1]!=L/2,(1/epsilon)*exp(-(L-2*p[1])/epsilon)*double2(0,-1,0),0)
-                //    + if_else(p[1]!=-L/2,(1/epsilon)*exp(-(2*p[1]+L)/epsilon)*double2(0,1,0),0);
-                if (walls) {
-                    if (oned) {
-                        p[a] += vector(if_else(p[0] > L/2,L-p[0],p[0]), 0 ,0);
-                            + vector(if_else(p[0] < -L/2,-L-p[0],p[0]), 0 ,0);
-                    } else {
-                        p[a] += vector(if_else(p[0] > L/2,L-p[0],p[0]), if_else(p[1] > L/2,L-p[1],p[1]),0);
-                            + vector(if_else(p[0] < -L/2,-L-p[0],p[0]), if_else(p[1] < -L/2,-L-p[1],p[1]),0);
-                    }
-                }
+                f[a] = -2*vector(p[a]) + sum(b, norm(dx) < cutoff && id_[a]!=id_[b], 
+                         if_else(norm(dx)!=0,(1/epsilon)*exp(-norm(dx)/epsilon)*dx/norm(dx),0));
+                p[a] += std::sqrt(2*D*dt)*vector(N,N) + dt*f[a]/(1+norm(f[a])*dt);
+                p[a] += vector(if_else(p[a][0] > L/2,L-p[a][0],p[a][0]), if_else(p[a][1] > L/2,L-p[a][1],p[a][1]));
+                    + vector(if_else(p[a][0] < -L/2,-L-p[a][0],p[a][0]), if_else(p[a][1] < -L/2,-L-p[a][1],p[a][1]));
 
             }
 
@@ -186,7 +167,8 @@ int main(int argc, char **argv) {
                 char buffer[100];
                 sprintf(buffer,"%s_points",output_name.c_str());
                 spheres.copy_to_vtk_grid(grid);
-                Visualisation::vtkWriteGrid(buffer,i,grid);
+                vtkWriteGrid(buffer,i,grid);
+
             }
 
 
@@ -209,20 +191,8 @@ int main(int argc, char **argv) {
     /*
      * all finished, output to files...
      */
-    std::vector<double> scaleby_pair(output_pair_hist[0].size());
-
-    for (int i=0;i<nr;i++) {
-        for (int j=0;j<ntheta;j++) {
-            const int index = i*ntheta + j;
-            const double r = (i+0.5)*dr;
-            scaleby_pair[index] = 1.0/(2*samples*n*(n-1)*r*dr*dtheta);
-        }
-    }
 
     double scaleby = 1.0/(samples*n*ds*ds);
-    if (oned) {
-        scaleby = 1.0/(samples*n*ds);
-    }
 
     for (int outi=0;outi<=nout;outi++) {
         std::cout << " writing output file "<<outi<<std::endl;
