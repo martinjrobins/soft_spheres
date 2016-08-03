@@ -1,5 +1,6 @@
 
 #include <random>
+typedef std::mt19937 generator_type;
 
 #include "Aboria.h"
 using namespace Aboria;
@@ -19,8 +20,8 @@ namespace po = boost::program_options;
 int main(int argc, char **argv) {
     const double L = 1.0;
 
-    double2 low(-L/2);
-    double2 high(L/2);
+    Vect3d low(-L/2,-L/2,0);
+    Vect3d high(L/2,L/2,0);
     const int nx = 101;
     const int nr = 100;
     const int ntheta = 100;
@@ -36,7 +37,7 @@ int main(int argc, char **argv) {
     std::string output_name;
 
     unsigned int n = 20;
-    unsigned int samples = 1000;
+    unsigned int samples = 1;
     double cutoff_ratio,timestep_ratio,final_time,sigma;
     int oned,mode,output_point_positions,init;
 
@@ -81,7 +82,7 @@ int main(int argc, char **argv) {
      * setup data structures and initial conditions
      */
     auto grid = vtkSmartPointer<vtkUnstructuredGrid>::New();
-    ABORIA_VARIABLE(force,double2,"force")
+    ABORIA_VARIABLE(force,Vect3d,"force")
     std::vector<unsigned int> output_hist[nout+1];
 
     for (int s=0;s<=nout;s++) {
@@ -93,8 +94,7 @@ int main(int argc, char **argv) {
     for (unsigned int sample=0;sample<samples;sample++) {
 
         generator_type generator(sample);
-        typedef Particles<std::tuple<force>,2> spheres_type;
-        typedef spheres_type::position position;
+        typedef Particles<force> spheres_type;
         spheres_type spheres(samples + sample*n);
 
         std::vector<unsigned int> output_hist_sample(nx*nx,0);
@@ -104,17 +104,15 @@ int main(int argc, char **argv) {
 
         for (int i=0; i<n; ++i) {
             bool not_done = true;
-            double2 p;
+            Vect3d p;
             while (not_done) {
-                p = double2(distribution(generator),distribution(generator));
+                p = Vect3d(distribution(generator),distribution(generator),0);
                 not_done = ((p[0] < low[0]) || (p[0] >= high[0]) || (p[1] < low[1]) || (p[1] >= high[1]));
             }
             spheres.push_back(p);
         }
 
-        double2 high_twod = double2(high[0]+(high[0]-low[0]),high[1]+(high[1]-low[1]));
-        double2 low_twod = double2(low[0]-(high[0]-low[0]),low[1]-(high[1]-low[1]));
-        spheres.init_neighbour_search(low_twod,high_twod,cutoff,bool2(false));
+        spheres.init_neighbour_search(low-(high-low),high+(high-low),cutoff,Vect3b(false,false,false));
 
         Symbol<position> p;
         Symbol<force> f;
@@ -122,10 +120,10 @@ int main(int argc, char **argv) {
         Symbol<alive> alive_;
         Label<0,spheres_type> a(spheres);
         Label<1,spheres_type> b(spheres);
-        auto dx = create_dx(a,b);
+        Dx dx;
         Normal N;
-        VectorSymbolic<double,2> vector;
-        Accumulate<std::plus<double2> > sum;
+        VectorSymbolic<double> vector;
+        Accumulate<std::plus<Vect3d> > sum;
         Accumulate<std::plus<int> > sum_int;
 
         /*
@@ -135,11 +133,11 @@ int main(int argc, char **argv) {
         for (int i = 0; i <= nout; i++) {
             
             for (int j = 0; j < timesteps_per_out; ++j) {
-                f[a] = -2*vector(p[a]) + sum(b, norm(dx) < cutoff && id_[a]!=id_[b], 
+                f[a] = -2*p[a] + sum(b, norm(dx) < cutoff && id_[a]!=id_[b], 
                          if_else(norm(dx)!=0,(1/epsilon)*exp(-norm(dx)/epsilon)*dx/norm(dx),0));
-                p[a] += std::sqrt(2*D*dt)*vector(N,N) + dt*f[a]/(1+norm(f[a])*dt);
-                p[a] += vector(if_else(p[a][0] > L/2,L-p[a][0],p[a][0]), if_else(p[a][1] > L/2,L-p[a][1],p[a][1]));
-                    + vector(if_else(p[a][0] < -L/2,-L-p[a][0],p[a][0]), if_else(p[a][1] < -L/2,-L-p[a][1],p[a][1]));
+                p[a] += std::sqrt(2*D*dt)*vector(N,N,0) + dt*f[a]/(1+norm(f[a])*dt);
+                p[a] = vector(if_else(p[0] > L/2,L-p[0],p[0]), if_else(p[1] > L/2,L-p[1],p[1]),0);
+                    + vector(if_else(p[0] < -L/2,-L-p[0],p[0]), if_else(p[1] < -L/2,-L-p[1],p[1]),0);
 
             }
 
@@ -151,11 +149,11 @@ int main(int argc, char **argv) {
              * output observables (rdf and concentration)
              */
             for (auto a:spheres) {
-                const double2 p_a = get<position>(a);
+                const Vect3d p_a = get<position>(a);
                 const int i = std::floor((p_a[0]-low[0])/ds);
                 const int j = std::floor((p_a[1]-low[1])/ds);
                 const int index = i*nx+j;
-                const double2 dx = p_a-(high-low)/2;
+                const Vect3d dx = p_a-(high-low)/2;
                 const double r = dx.norm();
                 const double theta = std::atan2(dx[1],dx[0]);
                 if (index < output_hist_sample.size()) {
@@ -163,13 +161,14 @@ int main(int argc, char **argv) {
                 }
             }
 
+            /*
             if (output_point_positions) {
                 char buffer[100];
                 sprintf(buffer,"%s_points",output_name.c_str());
-                spheres.copy_to_vtk_grid(grid);
-                vtkWriteGrid(buffer,i,grid);
+                vtkWriteGrid(buffer,i,spheres.get_grid());
 
             }
+            */
 
 
             /*
