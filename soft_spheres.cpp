@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
                 f[a] = -2*vector(p[a]) + sum(b, norm(dx) < cutoff && id_[a]!=id_[b], 
                          if_else(norm(dx)!=0,(1/epsilon)*exp(-norm(dx)/epsilon)*dx/norm(dx),0));
                 p[a] += std::sqrt(2*D*dt)*vector(N,N) + dt*f[a]/(1+norm(f[a])*dt);
-                p[a] += vector(if_else(p[a][0] > L/2,L-p[a][0],p[a][0]), if_else(p[a][1] > L/2,L-p[a][1],p[a][1]));
+                p[a] = vector(if_else(p[a][0] > L/2,L-p[a][0],p[a][0]), if_else(p[a][1] > L/2,L-p[a][1],p[a][1]));
                     + vector(if_else(p[a][0] < -L/2,-L-p[a][0],p[a][0]), if_else(p[a][1] < -L/2,-L-p[a][1],p[a][1]));
 
             }
